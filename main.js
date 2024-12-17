@@ -185,7 +185,7 @@ const main = async () => {
     var<uniform> uniforms : Uniforms;
     
     @group(1) @binding(0) 
-    var<storage, read_write> instanceData : array<Particle>;
+    var<storage, read> instanceData : array<Particle>;
         
     struct VertexOutput {
         @builtin(position) Position : vec4<f32>, // positionを出力するのは必須
@@ -313,8 +313,7 @@ const main = async () => {
         usage:
             GPUBufferUsage.STORAGE |
             GPUBufferUsage.VERTEX |
-            GPUBufferUsage.COPY_DST |  // bufferを更新する場合、コピー先としても扱う
-            GPUBufferUsage.COPY_SRC,
+            GPUBufferUsage.COPY_DST,
         mappedAtCreation: true
     });
     new Float32Array(particleInstancesBuffer.getMappedRange()).set(instanceDataArray);
@@ -491,6 +490,7 @@ const main = async () => {
                 @builtin(global_invocation_id) global_invocation_id: vec3<u32>
             ) {
                 let id = global_invocation_id.x;
+
                 if(id < arrayLength(&input)) {
                     let fid: f32 = f32(id);
                     let instance = input[id];
@@ -499,6 +499,7 @@ const main = async () => {
                     let force = curlNoise(currentPosition.xyz * uniforms.noiseScale) - currentVelocity;
                     let newVelocity = force * uniforms.speed * uniforms.deltaTime;
                     let newPosition = currentPosition + newVelocity;
+                    
                     input[id].position = vec4<f32>(newPosition.xyz, 1.);
                     input[id].velocity = vec4<f32>(newVelocity.xyz, 1.);
                 }
