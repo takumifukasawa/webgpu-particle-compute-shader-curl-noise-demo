@@ -34,6 +34,7 @@ const main = async () => {
     let needsResetDirtyFlag = true;
     let beginResetLastTime = -1;
     let requestResetLastTime = -1;
+    let cameraPosition = vec3.create(0, 0, 0);
 
     const instanceVertexElementsNum = 4 + 4;
 
@@ -75,6 +76,7 @@ const main = async () => {
         speed: 1,
         noiseScale: 0.05,
         particleScale: 0.1,
+        distanceFadePower: 0.025,
     };
 
     const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -176,7 +178,7 @@ const main = async () => {
         viewMatrix : mat4x4<f32>,
         worldMatrix : mat4x4<f32>,
         color: vec4<f32>,
-        particleScale: vec2<f32>
+        particleMisc: vec2<f32>, // [particleScale, distanceFadePower]
     };
 
     struct Particle {
@@ -192,8 +194,9 @@ const main = async () => {
         
     struct VertexOutput {
         @builtin(position) Position : vec4<f32>, // positionを出力するのは必須
+        @location(0) fragUV : vec2<f32>,
         @location(1) fragColor: vec4<f32>,
-        @location(0) fragUV : vec2<f32>
+        @location(2) distanceFadeRate : f32
     }
     
     @vertex 
@@ -205,19 +208,28 @@ const main = async () => {
         @location(4) instanceVelocity: vec4<f32>
     ) -> VertexOutput {
         var output : VertexOutput;
+        
+        let particleScale = uniforms.particleMisc.x;
+        let distanceFadePower = uniforms.particleMisc.y;
+        
         let viewPosition =
             uniforms.viewMatrix *
             uniforms.worldMatrix *
             vec4<f32>(instancePosition.xyz, 1.);
+
         // view座標系ベースでビルボードの大きさ計算
         output.Position =
             uniforms.projectionMatrix *
             vec4<f32>(
-                viewPosition.xy + (position.xy * uniforms.particleScale.xy),
+                viewPosition.xy + (position.xy * particleScale),
                 viewPosition.zw
             );
         output.fragColor = color * uniforms.color;
         output.fragUV = uv;
+
+        let cameraDistance = length(viewPosition.xyz);
+        output.distanceFadeRate = 1 / exp(cameraDistance * distanceFadePower);
+
         return output;
     }
     `;
@@ -225,11 +237,12 @@ const main = async () => {
     const fragWGSL = `
     @fragment
     fn main(
+        @location(0) fragUV: vec2<f32>,
         @location(1) fragColor: vec4<f32>,
-        @location(0) fragUV: vec2<f32>
+        @location(2) distanceFadeRate: f32
     ) -> @location(0) vec4<f32> {
         let len = length(fragUV - vec2<f32>(0.5));
-        let alpha = (1. - smoothstep(.25, .5, len)) * .25;
+        let alpha = (1. - smoothstep(.25, .5, len)) * .25 * distanceFadeRate;
         let color = vec4<f32>(fragColor.rgb, alpha * fragColor.a);
         return color;
     }
@@ -326,7 +339,7 @@ const main = async () => {
     // viewMatrix : mat4x4<f32>,
     // worldMatrix : mat4x4<f32>,
     // color: vec4<f32>
-    // particleScale: vec4<f32>
+    // misc[particleScale, distanceFadePower, -, -]: vec4<f32>
     const particleUniformBufferSize = 4 * 16 * 3 + 4 * 4 + 4 * 4;
     const particleUniformBuffer = gDevice.createBuffer({
         size: particleUniformBufferSize,
@@ -368,7 +381,6 @@ const main = async () => {
                 deltaTime: f32,
                 speed: f32,
                 noiseScale: f32,
-                needsResetDirtyFlag: f32
             };
             
             struct Instance {
@@ -382,10 +394,6 @@ const main = async () => {
             @group(0) @binding(1)
             var<storage, read_write> input : array<Instance>;
             
-            fn rand(co: vec2<f32>) -> f32 {
-                return fract(sin(dot(co, vec2<f32>(12.9898, 78.233))) * 43758.5453);
-            }
-
             fn mod289_v3(x: vec3<f32>) -> vec3<f32> {
             	return x - floor(x * (1. / 289.)) * 289.;
             } 
@@ -534,9 +542,8 @@ const main = async () => {
     // delta time: f32
     // speed: f32
     // noise scale: f32
-    // needs reset dirty flag: f32
-    const computeUniformElementsSize = 5;
-    const computeUniformBufferSize = 4 * 5;
+    const computeUniformElementsSize = 4;
+    const computeUniformBufferSize = 4 * 4;
     const computeUniformBuffer = gDevice.createBuffer({
         size: computeUniformBufferSize,
         usage:
@@ -582,7 +589,6 @@ const main = async () => {
             deltaTime,
             parameters.speed,
             parameters.noiseScale,
-            needsResetDirtyFlag ? 1 : 0
         ]);
         gDevice.queue.writeBuffer(
             computeUniformBuffer,
@@ -632,20 +638,19 @@ const main = async () => {
             colorData.byteLength
         );
 
-        const particleScaleData = new Float32Array([
+        const particleMiscData = new Float32Array([
             parameters.particleScale,
-            parameters.particleScale,
-            1,
-            1,
+            parameters.distanceFadePower,
+            0,
+            0
         ]);
         gDevice.queue.writeBuffer(
             particleUniformBuffer,
             4 * 16 * 3 + 4 * 4,
-            particleScaleData.buffer,
-            particleScaleData.byteOffset,
-            particleScaleData.byteLength
+            particleMiscData.buffer,
+            particleMiscData.byteOffset,
+            particleMiscData.byteLength
         );
-
 
         // gpuへの命令をパッキングするバッファ
         const renderCommandEncoder = gDevice.createCommandEncoder();
@@ -697,6 +702,7 @@ const main = async () => {
         }
 
         if (needsUpdateDirtyFlag) {
+            // このデモでは更新と描画を分けない
             update();
         }
 
@@ -722,8 +728,9 @@ const main = async () => {
     };
 
     const updateViewMatrix = (nx, ny) => {
+        vec3.set(nx * 10, ny * 10, -50, cameraPosition);
         const viewMatrix = mat4.lookAt(
-            [nx * 10, ny * 10, -50],
+            [cameraPosition[0], cameraPosition[1], cameraPosition[2]],
             [0, 0, 0],
             [0, 1, 0]
         );
@@ -749,6 +756,7 @@ const main = async () => {
         pane.addBinding(parameters, 'speed', {min: 0.001, max: 10});
         pane.addBinding(parameters, 'noiseScale', {min: 0.01, max: 0.1, step: 0.001});
         pane.addBinding(parameters, 'particleScale', {min: 0.01, max: 0.5, step: 0.001});
+        pane.addBinding(parameters, 'distanceFadePower', {min: 0.0001, max: 0.1, step: 0.0001});
         pane.addButton({
             title: 'Start',
         }).on('click', () => {
