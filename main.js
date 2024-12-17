@@ -31,6 +31,9 @@ const main = async () => {
     let currentTime = -1;
     let deltaTime = 0;
     let needsUpdateDirtyFlag = true;
+    let needsResetDirtyFlag = true;
+    let beginResetLastTime = -1;
+    let requestResetLastTime = -1;
 
     const instanceVertexElementsNum = 4 + 4;
 
@@ -365,7 +368,7 @@ const main = async () => {
                 deltaTime: f32,
                 speed: f32,
                 noiseScale: f32,
-                inputPosition: vec2<f32>,
+                needsResetDirtyFlag: f32
             };
             
             struct Instance {
@@ -378,6 +381,10 @@ const main = async () => {
             
             @group(0) @binding(1)
             var<storage, read_write> input : array<Instance>;
+            
+            fn rand(co: vec2<f32>) -> f32 {
+                return fract(sin(dot(co, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+            }
 
             fn mod289_v3(x: vec3<f32>) -> vec3<f32> {
             	return x - floor(x * (1. / 289.)) * 289.;
@@ -458,19 +465,6 @@ const main = async () => {
                 let dy = vec3<f32>(0.0, eps, 0.0);
                 let dz = vec3<f32>(0.0, 0.0, eps);
 
-                // // 勾配を計算 
-                // let gradient = vec3<f32>(
-                //     snoise(position + dx) - snoise(position - dx),
-                //     snoise(position + dy) - snoise(position - dy),
-                //     snoise(position + dz) - snoise(position - dz)
-                // ) / eps * 2.;
-
-                // return vec3<f32>(
-                //     gradient.z - gradient.y,
-                //     gradient.x - gradient.z,
-                //     gradient.y - gradient.x
-                // );
-             
                 let p_x0 = snoise3(position - dx);
                 let p_x1 = snoise3(position + dx);
                 let p_y0 = snoise3(position - dy);
@@ -494,12 +488,11 @@ const main = async () => {
                 if(id < arrayLength(&input)) {
                     let fid: f32 = f32(id);
                     let instance = input[id];
-                    let currentPosition = instance.position.xyz;
-                    let currentVelocity = instance.velocity.xyz;
+                    var currentPosition = instance.position.xyz;
+                    var currentVelocity = instance.velocity.xyz;
                     let force = curlNoise(currentPosition.xyz * uniforms.noiseScale) - currentVelocity;
                     let newVelocity = force * uniforms.speed * uniforms.deltaTime;
                     let newPosition = currentPosition + newVelocity;
-                    
                     input[id].position = vec4<f32>(newPosition.xyz, 1.);
                     input[id].velocity = vec4<f32>(newVelocity.xyz, 1.);
                 }
@@ -541,9 +534,9 @@ const main = async () => {
     // delta time: f32
     // speed: f32
     // noise scale: f32
-    // input position: vec2<f32>
-    const computeUniformElementsSize = 6;
-    const computeUniformBufferSize = 4 * 6;
+    // needs reset dirty flag: f32
+    const computeUniformElementsSize = 5;
+    const computeUniformBufferSize = 4 * 5;
     const computeUniformBuffer = gDevice.createBuffer({
         size: computeUniformBufferSize,
         usage:
@@ -575,6 +568,11 @@ const main = async () => {
     const update = async () => {
         needsUpdateDirtyFlag = false;
 
+        if (needsResetDirtyFlag) {
+            beginResetLastTime = performance.now();
+            gDevice.queue.writeBuffer(particleInstancesBuffer, 0, instanceDataArray);
+        }
+
         //
         // compute
         //
@@ -583,7 +581,8 @@ const main = async () => {
             currentTime,
             deltaTime,
             parameters.speed,
-            parameters.noiseScale
+            parameters.noiseScale,
+            needsResetDirtyFlag ? 1 : 0
         ]);
         gDevice.queue.writeBuffer(
             computeUniformBuffer,
@@ -680,6 +679,10 @@ const main = async () => {
         await gDevice.queue.onSubmittedWorkDone();
 
         needsUpdateDirtyFlag = true;
+
+        if(beginResetLastTime > requestResetLastTime) {
+            needsResetDirtyFlag = false;
+        }
     };
 
     const tick = (time) => {
@@ -749,8 +752,8 @@ const main = async () => {
         pane.addButton({
             title: 'Start',
         }).on('click', () => {
-            initializeInstances();
-            gDevice.queue.writeBuffer(particleInstancesBuffer, 0, instanceDataArray);
+            needsResetDirtyFlag = true;
+            requestResetLastTime = performance.now();
         });
     };
 
