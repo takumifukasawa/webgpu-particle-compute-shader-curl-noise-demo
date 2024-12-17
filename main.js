@@ -76,7 +76,7 @@ const main = async () => {
         speed: 5,
         flowAmp: 0.01,
         flowPeriod: 0.1,
-        noiseScale: 0.025,
+        noiseScale: 0.03,
         particleScale: 0.2,
         distanceFadePower: 0.025,
     };
@@ -593,7 +593,7 @@ const main = async () => {
             },
         ]
     });
-    
+
     //
     // functions
     //
@@ -721,13 +721,14 @@ const main = async () => {
     const tick = (time) => {
         const immediateRaf = currentTime < 0;
 
-        deltaTime = time / 1000 - currentTime;
-        currentTime = time / 1000;
-
         if (immediateRaf) {
+            currentTime = time / 1000;
             requestAnimationFrame(tick);
             return;
         }
+
+        deltaTime = time / 1000 - currentTime;
+        currentTime += deltaTime;
 
         if (needsUpdateDirtyFlag) {
             // このデモでは更新と描画を分けない
@@ -794,7 +795,7 @@ const main = async () => {
             requestResetLastTime = performance.now();
         });
     };
-    
+
     //
     // executes
     //
