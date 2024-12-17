@@ -30,6 +30,8 @@ const main = async () => {
     let width, height;
     let currentTime = -1;
     let deltaTime = 0;
+    let pausedLastTime = -1;
+    let totalPausingElapsedTime = 0;
     let needsUpdateDirtyFlag = true;
     let needsResetDirtyFlag = true;
     let beginResetLastTime = -1;
@@ -79,6 +81,7 @@ const main = async () => {
         noiseScale: 0.03,
         particleScale: 0.2,
         distanceFadePower: 0.025,
+        playing: true
     };
 
     const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -727,12 +730,14 @@ const main = async () => {
             return;
         }
 
-        deltaTime = time / 1000 - currentTime;
-        currentTime += deltaTime;
+        if (parameters.playing) {
+            deltaTime = (time / 1000 - totalPausingElapsedTime) - currentTime;
+            currentTime += deltaTime;
 
-        if (needsUpdateDirtyFlag) {
-            // このデモでは更新と描画を分けない
-            update();
+            if (needsUpdateDirtyFlag) {
+                // このデモでは更新と描画を分けない
+                update();
+            }
         }
 
         requestAnimationFrame(tick);
@@ -780,15 +785,24 @@ const main = async () => {
 
     const initDebugger = () => {
         const pane = new Pane();
-        pane.addBinding(parameters, 'instanceNum', {min: 1, max: maxInstanceNum, step: 1});
-        pane.addBinding(parameters, 'color');
-        pane.addBinding(parameters, 'speed', {min: 0.001, max: 10});
-        pane.addBinding(parameters, 'flowAmp', {min: 0.001, max: 0.25});
-        pane.addBinding(parameters, 'flowPeriod', {min: 0.1, max: 5});
-        pane.addBinding(parameters, 'noiseScale', {min: 0.01, max: 0.1, step: 0.001});
-        pane.addBinding(parameters, 'particleScale', {min: 0.01, max: 0.5, step: 0.001});
-        pane.addBinding(parameters, 'distanceFadePower', {min: 0.0001, max: 0.1, step: 0.0001});
-        pane.addButton({
+        const folder = pane.addFolder({title: 'Debug'});
+        folder.addBinding(parameters, 'instanceNum', {min: 1, max: maxInstanceNum, step: 1});
+        folder.addBinding(parameters, 'color');
+        folder.addBinding(parameters, 'speed', {min: 0.001, max: 10});
+        folder.addBinding(parameters, 'flowAmp', {min: 0.001, max: 0.25});
+        folder.addBinding(parameters, 'flowPeriod', {min: 0.1, max: 5});
+        folder.addBinding(parameters, 'noiseScale', {min: 0.01, max: 0.1, step: 0.001});
+        folder.addBinding(parameters, 'particleScale', {min: 0.01, max: 0.5, step: 0.001});
+        folder.addBinding(parameters, 'distanceFadePower', {min: 0.0001, max: 0.1, step: 0.0001});
+        folder.addBinding(parameters, 'playing')
+            .on('change', (e) => {
+                if (parameters.playing) {
+                    totalPausingElapsedTime += performance.now() / 1000 - pausedLastTime;
+                } else {
+                    pausedLastTime = performance.now() / 1000;
+                }
+            });
+        folder.addButton({
             title: 'Start',
         }).on('click', () => {
             needsResetDirtyFlag = true;
