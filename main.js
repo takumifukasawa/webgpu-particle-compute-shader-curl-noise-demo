@@ -73,9 +73,11 @@ const main = async () => {
     const parameters = {
         instanceNum: 200000,
         color: '#4f6ff5e5',
-        speed: 1,
-        noiseScale: 0.05,
-        particleScale: 0.1,
+        speed: 5,
+        flowAmp: 0.01,
+        flowPeriod: 0.1,
+        noiseScale: 0.025,
+        particleScale: 0.2,
         distanceFadePower: 0.025,
     };
 
@@ -86,6 +88,10 @@ const main = async () => {
         format: presentationFormat,
         alphaMode: 'opaque',
     });
+
+    //
+    // パーティクル描画周り
+    //
 
     // -------------------------------------
     // 0 ------ 3
@@ -132,34 +138,41 @@ const main = async () => {
     new Float32Array(particleVerticesBuffer.getMappedRange()).set(quadVertexArray);
     particleVerticesBuffer.unmap();
 
-    // position(vec4), velocity(vec4)
-    let instanceDataArray;
+    // position(vec4),
+    // velocity(vec4)
+    const instanceDataArray = new Float32Array(
+        new Array(maxInstanceNum)
+            .fill(0)
+            .map(() => {
+                const s = 6;
+                const v = 128;
+                return [
+                    // position
+                    Math.random() * s - s / 2,
+                    Math.random() * s - s / 2,
+                    Math.random() * s - s / 2,
+                    1,
+                    // velocity
+                    Math.random() * v - v / 2,
+                    Math.random() * v - v / 2,
+                    Math.random() * v - v / 2,
+                    1,
+                ];
+            })
+            .flat()
+    );
 
-    const initializeInstances = () => {
-        instanceDataArray = new Float32Array(
-            new Array(maxInstanceNum)
-                .fill(0)
-                .map(() => {
-                    const s = 5;
-                    const v = 128;
-                    return [
-                        // position
-                        Math.random() * s - s / 2,
-                        Math.random() * s - s / 2,
-                        Math.random() * s - s / 2,
-                        1,
-                        // velocity
-                        Math.random() * v - v / 2,
-                        Math.random() * v - v / 2,
-                        Math.random() * v - v / 2,
-                        1,
-                    ];
-                })
-                .flat()
-        );
-    }
-
-    initializeInstances();
+    const particleInstancePerVertexByteSize = 4 * 4 + 4 * 4;
+    const particleInstancesBuffer = gDevice.createBuffer({
+        size: instanceDataArray.byteLength,
+        usage:
+            GPUBufferUsage.STORAGE |
+            GPUBufferUsage.VERTEX |
+            GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true
+    });
+    new Float32Array(particleInstancesBuffer.getMappedRange()).set(instanceDataArray);
+    particleInstancesBuffer.unmap();
 
     // 反時計回りでインデックスを貼る
     const quadIndexArray = new Uint16Array([0, 1, 2, 0, 2, 3]);
@@ -278,7 +291,7 @@ const main = async () => {
                     ]
                 },
                 {
-                    arrayStride: 4 * 4 + 4 * 4,
+                    arrayStride: particleInstancePerVertexByteSize,
                     stepMode: 'instance',
                     attributes: [
                         {
@@ -324,23 +337,18 @@ const main = async () => {
         },
     });
 
-    const particleInstancesBuffer = gDevice.createBuffer({
-        size: instanceDataArray.byteLength,
-        usage:
-            GPUBufferUsage.STORAGE |
-            GPUBufferUsage.VERTEX |
-            GPUBufferUsage.COPY_DST,
-        mappedAtCreation: true
-    });
-    new Float32Array(particleInstancesBuffer.getMappedRange()).set(instanceDataArray);
-    particleInstancesBuffer.unmap();
-
     // projectionMatrix : mat4x4<f32>,
     // viewMatrix : mat4x4<f32>,
     // worldMatrix : mat4x4<f32>,
     // color: vec4<f32>
     // misc[particleScale, distanceFadePower, -, -]: vec4<f32>
     const particleUniformBufferSize = 4 * 16 * 3 + 4 * 4 + 4 * 4;
+    const particleProjectionMatrixByteOffset = 0;
+    const particleViewMatrixByteOffset = 4 * 16;
+    const particleWorldMatrixByteOffset = 4 * 16 * 2;
+    const particleColorByteOffset = 4 * 16 * 3;
+    const particleMiscByteOffset = 4 * 16 * 3 + 4 * 4;
+
     const particleUniformBuffer = gDevice.createBuffer({
         size: particleUniformBufferSize,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -362,14 +370,14 @@ const main = async () => {
 
     gDevice.queue.writeBuffer(
         particleUniformBuffer,
-        4 * 16 * 2,
+        particleWorldMatrixByteOffset,
         worldMatrix.buffer,
         worldMatrix.byteOffset,
         worldMatrix.byteLength
     );
 
     //
-    // compute
+    // compute shader 周り
     //
 
     gDevice.queue.writeBuffer(particleInstancesBuffer, 0, instanceDataArray);
@@ -380,6 +388,8 @@ const main = async () => {
                 time: f32,
                 deltaTime: f32,
                 speed: f32,
+                flowAmp: f32,
+                flowPeriod: f32,
                 noiseScale: f32,
             };
             
@@ -393,6 +403,10 @@ const main = async () => {
             
             @group(0) @binding(1)
             var<storage, read_write> input : array<Instance>;
+            
+            fn random(seed: f32) -> f32 {
+                return fract(sin(seed) * 43758.5453);
+            }
             
             fn mod289_v3(x: vec3<f32>) -> vec3<f32> {
             	return x - floor(x * (1. / 289.)) * 289.;
@@ -498,7 +512,13 @@ const main = async () => {
                     let instance = input[id];
                     var currentPosition = instance.position.xyz;
                     var currentVelocity = instance.velocity.xyz;
-                    let force = curlNoise(currentPosition.xyz * uniforms.noiseScale) - currentVelocity;
+                    let force = curlNoise(
+                        currentPosition.xyz *
+                            (uniforms.noiseScale * (
+                                1. +
+                                sin(uniforms.time * uniforms.flowPeriod + random(fid) * 10000.) * uniforms.flowAmp) // 少し振動させるためのもの
+                            )
+                    ) - currentVelocity;
                     let newVelocity = force * uniforms.speed * uniforms.deltaTime;
                     let newPosition = currentPosition + newVelocity;
                     input[id].position = vec4<f32>(newPosition.xyz, 1.);
@@ -541,9 +561,11 @@ const main = async () => {
     // time: f32
     // delta time: f32
     // speed: f32
+    // flow amplitude: f32
+    // flow period: f32
     // noise scale: f32
-    const computeUniformElementsSize = 4;
-    const computeUniformBufferSize = 4 * 4;
+    const computeUniformElementsSize = 6;
+    const computeUniformBufferSize = 4 * 6;
     const computeUniformBuffer = gDevice.createBuffer({
         size: computeUniformBufferSize,
         usage:
@@ -571,6 +593,10 @@ const main = async () => {
             },
         ]
     });
+    
+    //
+    // functions
+    //
 
     const update = async () => {
         needsUpdateDirtyFlag = false;
@@ -588,6 +614,8 @@ const main = async () => {
             currentTime,
             deltaTime,
             parameters.speed,
+            parameters.flowAmp,
+            parameters.flowPeriod,
             parameters.noiseScale,
         ]);
         gDevice.queue.writeBuffer(
@@ -632,7 +660,7 @@ const main = async () => {
         ]);
         gDevice.queue.writeBuffer(
             particleUniformBuffer,
-            4 * 16 * 3,
+            particleColorByteOffset,
             colorData.buffer,
             colorData.byteOffset,
             colorData.byteLength
@@ -646,7 +674,7 @@ const main = async () => {
         ]);
         gDevice.queue.writeBuffer(
             particleUniformBuffer,
-            4 * 16 * 3 + 4 * 4,
+            particleMiscByteOffset,
             particleMiscData.buffer,
             particleMiscData.byteOffset,
             particleMiscData.byteLength
@@ -685,7 +713,7 @@ const main = async () => {
 
         needsUpdateDirtyFlag = true;
 
-        if(beginResetLastTime > requestResetLastTime) {
+        if (beginResetLastTime > requestResetLastTime) {
             needsResetDirtyFlag = false;
         }
     };
@@ -720,7 +748,7 @@ const main = async () => {
         const projectionMatrix = mat4.perspective((60 * Math.PI) / 180, aspect, 1, 100);
         gDevice.queue.writeBuffer(
             particleUniformBuffer,
-            4 * 16 * 0,
+            particleProjectionMatrixByteOffset,
             projectionMatrix.buffer,
             projectionMatrix.byteOffset,
             projectionMatrix.byteLength
@@ -736,7 +764,7 @@ const main = async () => {
         );
         gDevice.queue.writeBuffer(
             particleUniformBuffer,
-            4 * 16 * 1,
+            particleViewMatrixByteOffset,
             viewMatrix.buffer,
             viewMatrix.byteOffset,
             viewMatrix.byteLength
@@ -754,6 +782,8 @@ const main = async () => {
         pane.addBinding(parameters, 'instanceNum', {min: 1, max: maxInstanceNum, step: 1});
         pane.addBinding(parameters, 'color');
         pane.addBinding(parameters, 'speed', {min: 0.001, max: 10});
+        pane.addBinding(parameters, 'flowAmp', {min: 0.001, max: 0.25});
+        pane.addBinding(parameters, 'flowPeriod', {min: 0.1, max: 5});
         pane.addBinding(parameters, 'noiseScale', {min: 0.01, max: 0.1, step: 0.001});
         pane.addBinding(parameters, 'particleScale', {min: 0.01, max: 0.5, step: 0.001});
         pane.addBinding(parameters, 'distanceFadePower', {min: 0.0001, max: 0.1, step: 0.0001});
@@ -764,6 +794,10 @@ const main = async () => {
             requestResetLastTime = performance.now();
         });
     };
+    
+    //
+    // executes
+    //
 
     initDebugger();
 
@@ -776,4 +810,5 @@ const main = async () => {
 
     requestAnimationFrame(tick);
 }
+
 main();
