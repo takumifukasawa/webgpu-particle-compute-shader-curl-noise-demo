@@ -1,0 +1,33 @@
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>vertex-buffer</title>
+    <style>
+        body {
+            background-color: black;
+        }
+        #js-wrapper {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+        }
+        #js-canvas {
+            display: block;
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+        }
+    </style>
+</head>
+<body>
+<div id="js-wrapper">
+    <canvas id="js-canvas" width="300" height="300"></canvas>
+</div>
+<script type="module" src="./main.js">
+</script>
+</body>
+</html>
