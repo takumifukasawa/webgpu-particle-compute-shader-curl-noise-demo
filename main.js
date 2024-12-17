@@ -28,11 +28,9 @@ import {Pane} from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.
 
 const main = async () => {
     let width, height;
-    let currentTime = -1;
-    let deltaTime = 0;
     let pausedLastTime = -1;
     let totalPausingElapsedTime = 0;
-    let needsUpdateDirtyFlag = true;
+    let allowUpdateDirtyFlag = true;
     let needsResetDirtyFlag = true;
     let beginResetLastTime = -1;
     let requestResetLastTime = -1;
@@ -601,8 +599,8 @@ const main = async () => {
     // functions
     //
 
-    const update = async () => {
-        needsUpdateDirtyFlag = false;
+    const update = async (t, dt) => {
+        allowUpdateDirtyFlag = false;
 
         if (needsResetDirtyFlag) {
             beginResetLastTime = performance.now();
@@ -614,8 +612,8 @@ const main = async () => {
         //
 
         const computeUniformData = new Float32Array([
-            currentTime,
-            deltaTime,
+            t,
+            dt,
             parameters.speed,
             parameters.flowAmp,
             parameters.flowPeriod,
@@ -714,30 +712,42 @@ const main = async () => {
         // queryでtimestampを確認する方が丁寧
         await gDevice.queue.onSubmittedWorkDone();
 
-        needsUpdateDirtyFlag = true;
+        allowUpdateDirtyFlag = true;
 
         if (beginResetLastTime > requestResetLastTime) {
             needsResetDirtyFlag = false;
         }
     };
 
-    const tick = (time) => {
-        const immediateRaf = currentTime < 0;
+    let lastUpdateTime = -1;
+    const targetFPS = 60;
+    const targetFrameTime = 1 / targetFPS;
+    let currentTime = 0;
+
+    const tick = (t) => {
+        const time = t / 1000;
+        const immediateRaf = lastUpdateTime < 0;
 
         if (immediateRaf) {
-            currentTime = time / 1000;
+            lastUpdateTime = time;
             requestAnimationFrame(tick);
             return;
         }
 
-        if (parameters.playing) {
-            deltaTime = (time / 1000 - totalPausingElapsedTime) - currentTime;
-            currentTime += deltaTime;
-
-            if (needsUpdateDirtyFlag) {
-                // このデモでは更新と描画を分けない
-                update();
+        if (
+            parameters.playing &&
+            allowUpdateDirtyFlag &&
+            (time - lastUpdateTime - totalPausingElapsedTime) > targetFrameTime
+        ) {
+            let deltaTime = 0;
+            // 追いつくまで回す
+            while ((time - lastUpdateTime - totalPausingElapsedTime) > targetFrameTime) {
+                lastUpdateTime += targetFrameTime;
+                deltaTime += targetFrameTime;
             }
+            currentTime += deltaTime;
+            // このデモでは更新と描画を分けない
+            update(currentTime, deltaTime);
         }
 
         requestAnimationFrame(tick);
@@ -805,14 +815,16 @@ const main = async () => {
         folder.addButton({
             title: 'Start',
         }).on('click', () => {
-            needsResetDirtyFlag = true;
-            requestResetLastTime = performance.now();
+            if (parameters.playing) {
+                needsResetDirtyFlag = true;
+                requestResetLastTime = performance.now();
+            }
         });
     };
 
-    //
-    // executes
-    //
+//
+// executes
+//
 
     initDebugger();
 
@@ -823,7 +835,10 @@ const main = async () => {
 
     window.addEventListener('mousemove', mouseMove);
 
-    requestAnimationFrame(tick);
+    // warmup
+    window.setTimeout(() => {
+        requestAnimationFrame(tick);
+    }, 500)
 }
 
 main();
