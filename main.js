@@ -20,15 +20,18 @@
 // --------------------------------------------------------------------
 
 import {
-    vec3,
-    mat4,
+    vec3, mat4,
 } from 'https://wgpu-matrix.org/dist/3.x/wgpu-matrix.module.js';
 import {Pane} from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
 
 
 const main = async () => {
     let width, height;
-    let pausedLastTime = -1;
+    let lastUpdateTime = -1;
+    const targetFPS = 60;
+    const targetFrameTime = 1 / targetFPS;
+    let currentTime = -1;
+    let pausedLastTime = 0;
     let totalPausingElapsedTime = 0;
     let allowUpdateDirtyFlag = true;
     let needsResetDirtyFlag = true;
@@ -50,23 +53,17 @@ const main = async () => {
     const limits = gDevice.limits;
 
     console.log("Max Compute Workgroup Size:", {
-        x: limits.maxComputeWorkgroupSizeX,
-        y: limits.maxComputeWorkgroupSizeY,
-        z: limits.maxComputeWorkgroupSizeZ,
+        x: limits.maxComputeWorkgroupSizeX, y: limits.maxComputeWorkgroupSizeY, z: limits.maxComputeWorkgroupSizeZ,
     });
 
-    console.log("Max Compute Workgroups Per Dimension:",
-        limits.maxComputeWorkgroupsPerDimension,
-    );
+    console.log("Max Compute Workgroups Per Dimension:", limits.maxComputeWorkgroupsPerDimension,);
 
     // スレッドを一次元にする
     const workgroupSize = limits.maxComputeWorkgroupSizeX;
 
-    const maxInstanceNum =
-        Math.min(
-            limits.maxComputeWorkgroupSizeX * limits.maxComputeWorkgroupsPerDimension, // 一次元で実行できる最大数
-            Math.pow(2, 32), // js の配列の最大長
-        ) / instanceVertexElementsNum; // 1インスタンスあたりの要素数
+    const maxInstanceNum = Math.min(limits.maxComputeWorkgroupSizeX * limits.maxComputeWorkgroupsPerDimension, // 一次元で実行できる最大数
+        Math.pow(2, 32), // js の配列の最大長
+    ) / instanceVertexElementsNum; // 1インスタンスあたりの要素数
 
     console.log("max instance num", maxInstanceNum);
 
@@ -85,9 +82,7 @@ const main = async () => {
     const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 
     context.configure({
-        device: gDevice,
-        format: presentationFormat,
-        alphaMode: 'opaque',
+        device: gDevice, format: presentationFormat, alphaMode: 'opaque',
     });
 
     //
@@ -110,30 +105,15 @@ const main = async () => {
     const quadColorOffset = 4 * 4; // 頂点カラーのオフセット. 32bitオフセット. 合計32bit
     const quadUVOffset = 4 * 4 + 4 * 4; // UVのオフセット(float4, float4 のオフセット)
 
-    const quadVertexArray = new Float32Array([
-        // position(vec4), color(vec4), uv(vec2)
+    const quadVertexArray = new Float32Array([// position(vec4), color(vec4), uv(vec2)
         // left top
-        -1, 1, 0, 1,
-        1, 1, 1, 1,
-        0, 1,
-        // left bottom
-        -1, -1, 0, 1,
-        1, 1, 1, 1,
-        0, 0,
-        // right bottom
-        1, -1, 0, 1,
-        1, 1, 1, 1,
-        1, 0,
-        // right top
-        1, 1, 0, 1,
-        1, 1, 1, 1,
-        1, 1,
-    ]);
+        -1, 1, 0, 1, 1, 1, 1, 1, 0, 1, // left bottom
+        -1, -1, 0, 1, 1, 1, 1, 1, 0, 0, // right bottom
+        1, -1, 0, 1, 1, 1, 1, 1, 1, 0, // right top
+        1, 1, 0, 1, 1, 1, 1, 1, 1, 1,]);
 
     const particleVerticesBuffer = gDevice.createBuffer({
-        size: quadVertexArray.byteLength,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true,
+        size: quadVertexArray.byteLength, usage: GPUBufferUsage.VERTEX, mappedAtCreation: true,
     });
 
     new Float32Array(particleVerticesBuffer.getMappedRange()).set(quadVertexArray);
@@ -141,35 +121,21 @@ const main = async () => {
 
     // position(vec4),
     // velocity(vec4)
-    const instanceDataArray = new Float32Array(
-        new Array(maxInstanceNum)
-            .fill(0)
-            .map(() => {
-                const s = 6;
-                const v = 128;
-                return [
-                    // position
-                    Math.random() * s - s / 2,
-                    Math.random() * s - s / 2,
-                    Math.random() * s - s / 2,
-                    1,
-                    // velocity
-                    Math.random() * v - v / 2,
-                    Math.random() * v - v / 2,
-                    Math.random() * v - v / 2,
-                    1,
-                ];
-            })
-            .flat()
-    );
+    const instanceDataArray = new Float32Array(new Array(maxInstanceNum)
+        .fill(0)
+        .map(() => {
+            const s = 6;
+            const v = 128;
+            return [// position
+                Math.random() * s - s / 2, Math.random() * s - s / 2, Math.random() * s - s / 2, 1, // velocity
+                Math.random() * v - v / 2, Math.random() * v - v / 2, Math.random() * v - v / 2, 1,];
+        })
+        .flat());
 
     const particleInstancePerVertexByteSize = 4 * 4 + 4 * 4;
     const particleInstancesBuffer = gDevice.createBuffer({
         size: instanceDataArray.byteLength,
-        usage:
-            GPUBufferUsage.STORAGE |
-            GPUBufferUsage.VERTEX |
-            GPUBufferUsage.COPY_DST,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true
     });
     new Float32Array(particleInstancesBuffer.getMappedRange()).set(instanceDataArray);
@@ -178,9 +144,7 @@ const main = async () => {
     // 反時計回りでインデックスを貼る
     const quadIndexArray = new Uint16Array([0, 1, 2, 0, 2, 3]);
     const quadIndicesBuffer = gDevice.createBuffer({
-        size: quadIndexArray.byteLength,
-        usage: GPUBufferUsage.INDEX,
-        mappedAtCreation: true,
+        size: quadIndexArray.byteLength, usage: GPUBufferUsage.INDEX, mappedAtCreation: true,
     });
 
     new Uint16Array(quadIndicesBuffer.getMappedRange()).set(quadIndexArray);
@@ -263,77 +227,43 @@ const main = async () => {
     `;
 
     const particleRenderPipeline = gDevice.createRenderPipeline({
-        layout: 'auto',
-        vertex: {
+        layout: 'auto', vertex: {
             module: gDevice.createShaderModule({
                 code: vertWGSL,
-            }),
-            entryPoint: 'main',
-            buffers: [
-                {
-                    arrayStride: quadVertexSize,
-                    stepMode: 'vertex',
-                    attributes: [
-                        {
-                            shaderLocation: 0, // @location(0)
-                            offset: quadPositionOffset,
-                            format: 'float32x4'
-                        },
-                        {
-                            shaderLocation: 1, // @location(1)
-                            offset: quadColorOffset,
-                            format: 'float32x4'
-                        },
-                        {
-                            shaderLocation: 2, // @location(2)
-                            offset: quadUVOffset,
-                            format: 'float32x2'
-                        }
-                    ]
-                },
-                {
-                    arrayStride: particleInstancePerVertexByteSize,
-                    stepMode: 'instance',
-                    attributes: [
-                        {
-                            shaderLocation: 3, // @location(3)
-                            offset: 0,
-                            format: 'float32x4'
-                        },
-                        {
-                            shaderLocation: 4, // @location(4)
-                            offset: 4 * 4,
-                            format: 'float32x4'
-                        }
-                    ]
-                }
-            ]
-        },
-        fragment: {
+            }), entryPoint: 'main', buffers: [{
+                arrayStride: quadVertexSize, stepMode: 'vertex', attributes: [{
+                    shaderLocation: 0, // @location(0)
+                    offset: quadPositionOffset, format: 'float32x4'
+                }, {
+                    shaderLocation: 1, // @location(1)
+                    offset: quadColorOffset, format: 'float32x4'
+                }, {
+                    shaderLocation: 2, // @location(2)
+                    offset: quadUVOffset, format: 'float32x2'
+                }]
+            }, {
+                arrayStride: particleInstancePerVertexByteSize, stepMode: 'instance', attributes: [{
+                    shaderLocation: 3, // @location(3)
+                    offset: 0, format: 'float32x4'
+                }, {
+                    shaderLocation: 4, // @location(4)
+                    offset: 4 * 4, format: 'float32x4'
+                }]
+            }]
+        }, fragment: {
             module: gDevice.createShaderModule({
                 code: fragWGSL,
-            }),
-            entryPoint: 'main',
-            targets: [
-                // @location(0)
+            }), entryPoint: 'main', targets: [// @location(0)
                 {
-                    format: presentationFormat,
-                    blend: {
+                    format: presentationFormat, blend: {
                         color: {
-                            srcFactor: 'src-alpha',
-                            dstFactor: 'one',
-                            operation: 'add',
-                        },
-                        alpha: {
-                            srcFactor: 'zero',
-                            dstFactor: 'one',
-                            operation: 'add',
+                            srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add',
+                        }, alpha: {
+                            srcFactor: 'zero', dstFactor: 'one', operation: 'add',
                         }
                     }
-                }
-            ]
-        },
-        primitive: {
+                }]
+        }, primitive: {
             topology: 'triangle-list',
         },
     });
@@ -351,31 +281,22 @@ const main = async () => {
     const particleMiscByteOffset = 4 * 16 * 3 + 4 * 4;
 
     const particleUniformBuffer = gDevice.createBuffer({
-        size: particleUniformBufferSize,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        size: particleUniformBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
 
     const particleUniformBindGroup = gDevice.createBindGroup({
         layout: particleRenderPipeline.getBindGroupLayout(0), // @group(0)
-        entries: [
-            {
-                binding: 0, // @binding(0)
-                resource: {
-                    buffer: particleUniformBuffer
-                }
-            },
-        ]
+        entries: [{
+            binding: 0, // @binding(0)
+            resource: {
+                buffer: particleUniformBuffer
+            }
+        },]
     });
 
     const worldMatrix = mat4.identity();
 
-    gDevice.queue.writeBuffer(
-        particleUniformBuffer,
-        particleWorldMatrixByteOffset,
-        worldMatrix.buffer,
-        worldMatrix.byteOffset,
-        worldMatrix.byteLength
-    );
+    gDevice.queue.writeBuffer(particleUniformBuffer, particleWorldMatrixByteOffset, worldMatrix.buffer, worldMatrix.byteOffset, worldMatrix.byteLength);
 
     //
     // compute shader 周り
@@ -530,21 +451,15 @@ const main = async () => {
     });
 
     const computeBindGroupLayout = gDevice.createBindGroupLayout({
-        entries: [
-            {
-                binding: 0,
-                visibility: GPUShaderStage.COMPUTE,
-                buffer: {
-                    type: 'uniform',
-                }
-            },
-            {
-                binding: 1,
-                visibility: GPUShaderStage.COMPUTE,
-                buffer: {
-                    type: 'storage',
-                }
-            },
+        entries: [{
+            binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: {
+                type: 'uniform',
+            }
+        }, {
+            binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {
+                type: 'storage',
+            }
+        },
 
         ]
     });
@@ -552,10 +467,8 @@ const main = async () => {
     const computePipeline = gDevice.createComputePipeline({
         layout: gDevice.createPipelineLayout({
             bindGroupLayouts: [computeBindGroupLayout]
-        }),
-        compute: {
-            module: computeShaderModule,
-            entryPoint: 'main'
+        }), compute: {
+            module: computeShaderModule, entryPoint: 'main'
         }
     });
 
@@ -568,31 +481,24 @@ const main = async () => {
     const computeUniformElementsSize = 6;
     const computeUniformBufferSize = 4 * 6;
     const computeUniformBuffer = gDevice.createBuffer({
-        size: computeUniformBufferSize,
-        usage:
-            GPUBufferUsage.UNIFORM |
-            GPUBufferUsage.COPY_DST,
-        mappedAtCreation: true
+        size: computeUniformBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, mappedAtCreation: true
     });
     new Float32Array(computeUniformBuffer.getMappedRange()).set(new Float32Array(computeUniformElementsSize));
     computeUniformBuffer.unmap();
 
     const computeBindGroup = gDevice.createBindGroup({
         layout: computePipeline.getBindGroupLayout(0), // @group(0)
-        entries: [
-            {
-                binding: 0, // @binding(0)
-                resource: {
-                    buffer: computeUniformBuffer
-                },
+        entries: [{
+            binding: 0, // @binding(0)
+            resource: {
+                buffer: computeUniformBuffer
             },
-            {
-                binding: 1, // @binding(1)
-                resource: {
-                    buffer: particleInstancesBuffer
-                },
+        }, {
+            binding: 1, // @binding(1)
+            resource: {
+                buffer: particleInstancesBuffer
             },
-        ]
+        },]
     });
 
     //
@@ -611,28 +517,11 @@ const main = async () => {
         // compute
         //
 
-        const computeUniformData = new Float32Array([
-            t,
-            dt,
-            parameters.speed,
-            parameters.flowAmp,
-            parameters.flowPeriod,
-            parameters.noiseScale,
-        ]);
-        gDevice.queue.writeBuffer(
-            computeUniformBuffer,
-            0,
-            computeUniformData.buffer,
-            computeUniformData.byteOffset,
-            computeUniformData.byteLength
-        );
+        const computeUniformData = new Float32Array([t, dt, parameters.speed, parameters.flowAmp, parameters.flowPeriod, parameters.noiseScale,]);
+        gDevice.queue.writeBuffer(computeUniformBuffer, 0, computeUniformData.buffer, computeUniformData.byteOffset, computeUniformData.byteLength);
 
         // 一次元で実行
-        const dispatchGroupSize =
-            Math.min(
-                limits.maxComputeWorkgroupsPerDimension,
-                Math.ceil(parameters.instanceNum / workgroupSize)
-            );
+        const dispatchGroupSize = Math.min(limits.maxComputeWorkgroupsPerDimension, Math.ceil(parameters.instanceNum / workgroupSize));
 
         const computeCommandEncoder = gDevice.createCommandEncoder();
         const computePassEncoder = computeCommandEncoder.beginComputePass();
@@ -653,46 +542,22 @@ const main = async () => {
         const b = parseInt(hex.substring(4, 6), 16);
         const a = parseInt(hex.substring(6, 8), 16);
 
-        const colorData = new Float32Array([
-            r / 255,
-            g / 255,
-            b / 255,
-            a / 255
-        ]);
-        gDevice.queue.writeBuffer(
-            particleUniformBuffer,
-            particleColorByteOffset,
-            colorData.buffer,
-            colorData.byteOffset,
-            colorData.byteLength
-        );
+        const colorData = new Float32Array([r / 255, g / 255, b / 255, a / 255]);
+        gDevice.queue.writeBuffer(particleUniformBuffer, particleColorByteOffset, colorData.buffer, colorData.byteOffset, colorData.byteLength);
 
-        const particleMiscData = new Float32Array([
-            parameters.particleScale,
-            parameters.distanceFadePower,
-            0,
-            0
-        ]);
-        gDevice.queue.writeBuffer(
-            particleUniformBuffer,
-            particleMiscByteOffset,
-            particleMiscData.buffer,
-            particleMiscData.byteOffset,
-            particleMiscData.byteLength
-        );
+        const particleMiscData = new Float32Array([parameters.particleScale, parameters.distanceFadePower, 0, 0]);
+        gDevice.queue.writeBuffer(particleUniformBuffer, particleMiscByteOffset, particleMiscData.buffer, particleMiscData.byteOffset, particleMiscData.byteLength);
 
         // gpuへの命令をパッキングするバッファ
         const renderCommandEncoder = gDevice.createCommandEncoder();
 
         const renderPassDescriptor = {
-            colorAttachments: [
-                {
-                    view: context.getCurrentTexture().createView(),
-                    clearValue: {r: 0.0, g: 0.0, b: 0.0, a: 1.0},
-                    loadOp: 'clear', // 命令実施前に行う処理
-                    storeOp: 'store', // 命令実施後のバッファの扱い
-                }
-            ],
+            colorAttachments: [{
+                view: context.getCurrentTexture().createView(),
+                clearValue: {r: 0.0, g: 0.0, b: 0.0, a: 1.0},
+                loadOp: 'clear', // 命令実施前に行う処理
+                storeOp: 'store', // 命令実施後のバッファの扱い
+            }],
         };
 
         const renderPassEncoder = renderCommandEncoder.beginRenderPass(renderPassDescriptor);
@@ -719,36 +584,44 @@ const main = async () => {
         }
     };
 
-    let lastUpdateTime = -1;
-    const targetFPS = 60;
-    const targetFrameTime = 1 / targetFPS;
-    let currentTime = 0;
-
     const tick = (t) => {
         const time = t / 1000;
-        const immediateRaf = lastUpdateTime < 0;
+        const immediateRaf = currentTime < 0;
+        // for chase pattern
+        // const immediateRaf = lastUpdateTime < 0;
 
         if (immediateRaf) {
-            lastUpdateTime = time;
+            // for chase pattern
+            // lastUpdateTime = time;
+            currentTime = time;
             requestAnimationFrame(tick);
             return;
         }
 
-        if (
-            parameters.playing &&
-            allowUpdateDirtyFlag &&
-            (time - lastUpdateTime - totalPausingElapsedTime) > targetFrameTime
-        ) {
-            let deltaTime = 0;
-            // 追いつくまで回す
-            while ((time - lastUpdateTime - totalPausingElapsedTime) > targetFrameTime) {
-                lastUpdateTime += targetFrameTime;
-                deltaTime += targetFrameTime;
-            }
+        // simple pattern
+        if (parameters.playing && allowUpdateDirtyFlag) {
+            const deltaTime = (time - totalPausingElapsedTime) - currentTime;
             currentTime += deltaTime;
             // このデモでは更新と描画を分けない
             update(currentTime, deltaTime);
         }
+
+        // chase pattern
+        // if (
+        //     parameters.playing &&
+        //     allowUpdateDirtyFlag &&
+        //     (time - lastUpdateTime - totalPausingElapsedTime) > targetFrameTime
+        // ) {
+        //     let deltaTime = 0;
+        //     // 追いつくまで回す
+        //     while ((time - lastUpdateTime - totalPausingElapsedTime) > targetFrameTime) {
+        //         lastUpdateTime += targetFrameTime;
+        //         deltaTime += targetFrameTime;
+        //     }
+        //     currentTime += deltaTime;
+        //     // このデモでは更新と描画を分けない
+        //     update(currentTime, deltaTime);
+        // }
 
         requestAnimationFrame(tick);
     };
@@ -762,29 +635,13 @@ const main = async () => {
 
         let aspect = canvas.width / canvas.height;
         const projectionMatrix = mat4.perspective((60 * Math.PI) / 180, aspect, 1, 100);
-        gDevice.queue.writeBuffer(
-            particleUniformBuffer,
-            particleProjectionMatrixByteOffset,
-            projectionMatrix.buffer,
-            projectionMatrix.byteOffset,
-            projectionMatrix.byteLength
-        );
+        gDevice.queue.writeBuffer(particleUniformBuffer, particleProjectionMatrixByteOffset, projectionMatrix.buffer, projectionMatrix.byteOffset, projectionMatrix.byteLength);
     };
 
     const updateViewMatrix = (nx, ny) => {
         vec3.set(nx * 10, ny * 10, -50, cameraPosition);
-        const viewMatrix = mat4.lookAt(
-            [cameraPosition[0], cameraPosition[1], cameraPosition[2]],
-            [0, 0, 0],
-            [0, 1, 0]
-        );
-        gDevice.queue.writeBuffer(
-            particleUniformBuffer,
-            particleViewMatrixByteOffset,
-            viewMatrix.buffer,
-            viewMatrix.byteOffset,
-            viewMatrix.byteLength
-        );
+        const viewMatrix = mat4.lookAt([cameraPosition[0], cameraPosition[1], cameraPosition[2]], [0, 0, 0], [0, 1, 0]);
+        gDevice.queue.writeBuffer(particleUniformBuffer, particleViewMatrixByteOffset, viewMatrix.buffer, viewMatrix.byteOffset, viewMatrix.byteLength);
     }
 
     const mouseMove = (event) => {
@@ -822,11 +679,9 @@ const main = async () => {
         });
     };
 
-//
-// executes
-//
-
-    initDebugger();
+    //
+    // executes
+    //
 
     updateViewMatrix(0, 0);
 
@@ -837,8 +692,11 @@ const main = async () => {
 
     // warmup
     window.setTimeout(() => {
+        initDebugger();
+    }, 250);
+    window.setTimeout(() => {
         requestAnimationFrame(tick);
-    }, 500)
+    }, 750)
 }
 
 main();
